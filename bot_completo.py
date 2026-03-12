@@ -10,10 +10,21 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+import os
 from playwright.async_api import async_playwright
 
-TOKEN = "8634912458:AAHVJBE8vXTP9aLcfSQ3RbfcRRf2_qXVQl8"
+# Obtener el token de la variable de entorno
+TOKEN = os.environ.get("TOKEN")
+if not TOKEN:
+    raise ValueError(
+        "No se encontró el TOKEN en las variables de entorno. "
+        "Asegúrate de configurarlo en Render."
+    )
+
+# Variables para el manejo de conversaciones en Telegram
 ORIGEN, DESTINO, FECHA, HORA_INI, HORA_FIN = range(5)
+
+# Lista donde se guardarán las búsquedas activas
 busquedas = []
 
 # --- Funciones de conversación ---
