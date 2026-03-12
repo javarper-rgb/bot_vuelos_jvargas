@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: bot_vuelos
+    env: python
+    pythonVersion: 3.13.10
+    buildCommand: bash build.sh
+    startCommand: python bot_completo.py
