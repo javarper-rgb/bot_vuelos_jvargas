@@ -13,6 +13,15 @@ from telegram.ext import (
 import os
 from playwright.async_api import async_playwright
 
+# --- DEBUG: Comprobar versión de Python ---
+print(f"Ejecutando con Python {sys.version}")
+REQUIRED_PYTHON = (3, 12, 16)
+if sys.version_info < REQUIRED_PYTHON:
+    raise RuntimeError(
+        f"ERROR: Necesitas Python >= {REQUIRED_PYTHON[0]}.{REQUIRED_PYTHON[1]}.{REQUIRED_PYTHON[2]}, "
+        f"pero estás usando {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    )
+
 # Obtener el token de la variable de entorno
 TOKEN = os.environ.get("TOKEN")
 if not TOKEN:
@@ -139,7 +148,7 @@ def main():
     app.add_handler(CommandHandler("ayuda", ayuda))
     app.add_handler(conv_handler)
 
-    # --- Job queue para monitor --- 
+    # --- Job queue para monitor ---
     app.job_queue.run_repeating(monitor, interval=300, first=10)  # cada 5 minutos
 
     print("Bot @vuelos_jvargas_bot funcionando...")
