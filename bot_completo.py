@@ -12,7 +12,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ConversationHandler
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = "8634912458:AAH0avwnrstI1LqZ1ViveQtsxmHNjd17gIU"
+TOKEN = "8634912458:AAGXOXd9tWJx1r0c2coRmOLonhTIIs7-h3k"
 
 # --- SERVIDOR WEB ---
 app_flask = Flask(__name__)
