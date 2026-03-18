@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # --- CONFIGURACIÓN DIRECTA ---
 TOKEN = "8634912458:AAH0avwnrstI1LqZ1ViveQtsxmHNjd17gIU"
 
-# --- SERVIDOR WEB (Obligatorio para que Render no mate el proceso) ---
+# --- SERVIDOR WEB (Para Render) ---
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
@@ -23,9 +23,8 @@ def health():
     return "Bot Binter Cloud Online", 200
 
 def run_flask():
-    # Render asigna el puerto automáticamente
     port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Servidor Flask escuchando en puerto {port}")
+    logger.info(f"Servidor Flask en puerto {port}")
     app_flask.run(host='0.0.0.0', port=port)
 
 # --- LÓGICA DEL BOT ---
@@ -36,32 +35,42 @@ async def buscar_vuelos_playwright(b):
     vuelos_validos = []
     async with async_playwright() as p:
         try:
-            # Configuración específica para entornos Linux/Docker (Render)
+            # User-Agent real para que Google no nos detecte como Bot básico
+            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            
             browser = await p.chromium.launch(
                 headless=True, 
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
-            page = await browser.new_page()
             
-            query = f"vuelos binter {b['origen']} a {b['destino']} {b['fecha']}"
-            logger.info(f"Iniciando búsqueda Playwright: {query}")
+            context = await browser.new_context(user_agent=user_agent)
+            page = await context.new_page()
             
-            # Navegamos a Google con un tiempo de espera prudente
-            await page.goto(f"https://google.com{query}&hl=es", timeout=60000)
+            # Búsqueda optimizada
+            query = f"vuelos binter de {b['origen']} a {b['destino']} el {b['fecha']}"
+            url = f"https://google.com{query.replace(' ', '+')}&hl=es"
+            
+            logger.info(f"Navegando a Google: {url}")
+            await page.goto(url, wait_until="networkidle", timeout=60000)
+            
+            # Esperamos a que carguen los elementos dinámicos
+            await page.wait_for_timeout(5000) 
             content = await page.content()
             
-            # Buscamos patrones de hora (HH:MM)
+            # Extraer horas (HH:MM)
             patrones_hora = re.findall(r'\b(?:[0-1]?[0-9]|2[0-3])[:][0-5][0-9]\b', content)
+            logger.info(f"Horas detectadas en bruto: {patrones_hora}")
             
-            # Verificamos que los resultados mencionen a la aerolínea
-            if any(x in content for x in ["Binter", "Canarias", "NT"]):
+            # Filtrado por rango horario del usuario
+            if "Binter" in content or "Canarias" in content or "vuelos" in content:
                 for h in set(patrones_hora):
                     if b['hora_ini'] <= h <= b['hora_fin']:
                         vuelos_validos.append(h)
             
             await browser.close()
         except Exception as e:
-            logger.error(f"Error en la navegación Playwright: {e}")
+            logger.error(f"Error en Playwright: {e}")
+            
     return sorted(list(set(vuelos_validos)))
 
 async def monitor_callback(context: ContextTypes.DEFAULT_TYPE):
@@ -69,20 +78,21 @@ async def monitor_callback(context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in busquedas_activas: return
     
     b = busquedas_activas[chat_id]
-    logger.info(f"Ejecutando revisión programada para {chat_id}...")
+    logger.info(f"Buscando vuelos para el chat {chat_id}...")
     
     vuelos = await buscar_vuelos_playwright(b)
     
     if vuelos:
-        msg = f"✈️ **¡VUELOS ENCONTRADOS!**\n{b['origen']} ➔ {b['destino']} ({b['fecha']})\n\n🕒 **Horas:**\n✅ " + "\n✅ ".join(vuelos)
+        msg = f"✈️ **¡VUELOS ENCONTRADOS!**\n{b['origen']} ➔ {b['destino']} ({b['fecha']})\n\n🕒 **Horas disponibles:**\n✅ " + "\n✅ ".join(vuelos)
         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-        # Si encuentra algo, detenemos el monitor
         context.job.schedule_removal()
         del busquedas_activas[chat_id]
+    else:
+        logger.info(f"No se encontraron vuelos para {chat_id} en esta pasada.")
 
 # --- HANDLERS ---
 async def start(u: Update, c):
-    await u.message.reply_text("✈️ **Monitor Binter Activo**\nUsa /buscar para configurar una alerta.")
+    await u.message.reply_text("✈️ **Monitor Binter Cloud Activo**\nUsa /buscar para empezar.")
 
 async def buscar(u: Update, c):
     await u.message.reply_text("📍 Origen (ej: LPA):")
@@ -109,21 +119,20 @@ async def hora_ini(u: Update, c):
     return HORA_FIN
 
 async def hora_fin(u: Update, c):
-    c.user_data["hora_fin"] = u.message.text
     chat_id = u.effective_chat.id
     busquedas_activas[chat_id] = {
         "origen": c.user_data["origen"], "destino": c.user_data["destino"],
         "fecha": c.user_data["fecha"], "hora_ini": c.user_data["hora_ini"],
-        "hora_fin": c.user_data["hora_fin"]
+        "hora_fin": u.message.text
     }
-    # Revisar cada 5 minutos (300 segundos)
+    # Revisión cada 5 min
     c.job_queue.run_repeating(monitor_callback, interval=300, first=5, chat_id=chat_id)
-    await u.message.reply_text("✅ **Monitor activado.** Te avisaré por aquí cuando detecte vuelos.")
+    await u.message.reply_text("✅ **Monitor activado.** Revisaré cada 5 minutos y te avisaré si hay vuelos.")
     return ConversationHandler.END
 
-# --- EJECUCIÓN ---
+# --- INICIO ---
 if __name__ == "__main__":
-    # 1. Servidor Flask en hilo separado
+    # 1. Servidor Flask
     Thread(target=run_flask, daemon=True).start()
     
     # 2. Configurar Bot
@@ -144,7 +153,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
     
-    logger.info("🚀 Intentando arrancar Bot (limpiando sesiones previas)...")
+    logger.info("🚀 Iniciando Bot con Token Nuevo...")
     
-    # drop_pending_updates=True es CRUCIAL para resolver el error 'Conflict'
+    # drop_pending_updates limpia mensajes antiguos y evita el error Conflict
     app.run_polling(drop_pending_updates=True)
+
