@@ -77,6 +77,22 @@ async def hora_fin(u, c):
     return ConversationHandler.END
 
 if __name__ == "__main__":
+    # 1. Servidor Flask
+    Thread(target=run_flask, daemon=True).start()
+    
+    # 2. Configurar App
+    app = ApplicationBuilder().token(TOKEN).build()
+    
+    # --- Añade aquí tus handlers ---
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv_handler)
+    
+    logger.info("🚀 Intentando tomar el control del Bot...")
+    
+    # 3. Ejecutar con limpieza agresiva de sesiones previas
+    # drop_pending_updates=True elimina mensajes acumulados y fuerza la nueva conexión
+    app.run_polling(drop_pending_updates=True, close_loop=False)
+
     Thread(target=run_flask, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
     conv_handler = ConversationHandler(
