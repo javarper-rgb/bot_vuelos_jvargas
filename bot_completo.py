@@ -13,7 +13,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURACIÓN DIRECTA ---
-TOKEN = "8634912458:AAH0avwnrstI1LqZ1ViveQtsxmHNjd17gIU"
+TOKEN = "8634912458:AAGXOXd9tWJx1r0c2coRmOLonhTIIs7-h3k"
 
 # --- SERVIDOR WEB (Para Render) ---
 app_flask = Flask(__name__)
