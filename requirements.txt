@@ -2,3 +2,4 @@ python-telegram-bot[job-queue]
 requests
 flask
 gunicorn
+playwright
