@@ -1,164 +1,87 @@
 import sys
-import asyncio
-import httpx
-import os
 import re
+import requests
+import asyncio
+import os
+from threading import Thread
 from datetime import datetime
-
+from flask import Flask
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ConversationHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ConversationHandler, MessageHandler, ContextTypes, filters
 
-print(f"Ejecutando con Python {sys.version}")
+# --- SERVIDOR AUXILIAR PARA RENDER ---
+# Render necesita un puerto abierto para no matar el proceso
+app_flask = Flask(__name__)
+@app_flask.route('/')
+def health_check(): return "Bot Vivo", 200
 
-# --- TOKEN ---
-TOKEN = os.environ.get("TOKEN")
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app_flask.run(host='0.0.0.0', port=port)
 
-if not TOKEN:
-    raise ValueError("No se encontró el TOKEN en las variables de entorno")
-
-# --- Conversación ---
+# --- CONFIGURACIÓN BOT ---
+TOKEN = os.environ.get("TOKEN", "8634912458:AAHVJBE8vXTP9aLcfSQ3RbfcRRf2_qXVQl8")
 ORIGEN, DESTINO, FECHA, HORA_INI, HORA_FIN = range(5)
+busquedas_activas = {}
 
-# --- búsquedas activas ---
-busquedas = []
+def buscar_vuelos_directo(b):
+    vuelos_validos = []
+    url_base = "https://google.com" # URL Corregida
+    parametros = {
+        "q": f"vuelos binter {b['origen']} a {b['destino']} {b['fecha']}",
+        "hl": "es", "gl": "es"
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
+    try:
+        response = requests.get(url_base, params=parametros, headers=headers, timeout=20)
+        texto = response.text
+        patrones_hora = re.findall(r'\b(?:[0-1]?[0-9]|2[0-3])[:\.\-][0-5][0-9]\b', texto)
+        horas_limpias = [h.replace('.', ':').replace('-', ':').zfill(5) for h in patrones_hora]
+        if any(x in texto for x in ["Binter", "Canarias", "NT"]):
+            for h in set(horas_limpias):
+                if b['hora_ini'] <= h <= b['hora_fin']:
+                    vuelos_validos.append(h)
+    except Exception as e:
+        print(f"Error consulta: {e}")
+    return sorted(list(set(vuelos_validos)))
 
-# ---------------------------
-# COMANDOS TELEGRAM
-# ---------------------------
+async def monitor_callback(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.job.chat_id
+    if chat_id not in busquedas_activas: return
+    b = busquedas_activas[chat_id]
+    vuelos = await asyncio.to_thread(buscar_vuelos_directo, b)
+    if vuelos:
+        msg = f"✈️ **¡VUELOS ENCONTRADOS!**\n{b['origen']} ➔ {b['destino']} ({b['fecha']})\n\n🕒 **Horas:**\n✅ " + "\n✅ ".join(vuelos)
+        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+        context.job.schedule_removal()
+        del busquedas_activas[chat_id]
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "✈️ Bot buscador de vuelos directos Binter\nUsa /buscar para iniciar."
-    )
-
-async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Ejemplo:\nLPA TFN 2026-03-14 15:00 18:00"
-    )
-
-async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Origen (ej: LPA)")
-    return ORIGEN
-
-async def origen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["origen"] = update.message.text.upper()
-    await update.message.reply_text("Destino (ej: TFN)")
-    return DESTINO
-
-async def destino(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["destino"] = update.message.text.upper()
-    await update.message.reply_text("Fecha (AAAA-MM-DD)")
-    return FECHA
-
-async def fecha(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["fecha"] = update.message.text
-    await update.message.reply_text("Hora inicio (HH:MM)")
-    return HORA_INI
-
-async def hora_ini(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["hora_ini"] = update.message.text
-    await update.message.reply_text("Hora fin (HH:MM)")
-    return HORA_FIN
-
-async def hora_fin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    context.user_data["hora_fin"] = update.message.text
-
-    busquedas.append({
-        "chat_id": update.effective_chat.id,
-        **context.user_data
-    })
-
-    await update.message.reply_text(
-        f"✅ Búsqueda activada\n"
-        f"{context.user_data['origen']} → {context.user_data['destino']}\n"
-        f"{context.user_data['fecha']}\n"
-        f"{context.user_data['hora_ini']} a {context.user_data['hora_fin']}"
-    )
-
+# --- HANDLERS TELEGRAM ---
+async def start(u, c): await u.message.reply_text("✈️ Monitor Binter Cloud.\nUsa /buscar.")
+async def buscar(u, c): await u.message.reply_text("📍 Origen (LPA):"); return ORIGEN
+async def origen(u, c): c.user_data["origen"] = u.message.text.upper(); await u.message.reply_text("🏁 Destino (TFN):"); return DESTINO
+async def destino(u, c): c.user_data["destino"] = u.message.text.upper(); await u.message.reply_text("📅 Fecha (AAAA-MM-DD):"); return FECHA
+async def fecha(u, c): c.user_data["fecha"] = u.message.text; await u.message.reply_text("🕒 Hora inicio (12:00):"); return HORA_INI
+async def hora_ini(u, c): c.user_data["hora_ini"] = u.message.text; await u.message.reply_text("🕒 Hora fin (20:00):"); return HORA_FIN
+async def hora_fin(u, c):
+    c.user_data["hora_fin"] = u.message.text
+    chat_id = u.effective_chat.id
+    busquedas_activas[chat_id] = {
+        "origen": c.user_data["origen"], "destino": c.user_data["destino"],
+        "fecha": c.user_data["fecha"], "hora_ini": c.user_data["hora_ini"].zfill(5),
+        "hora_fin": c.user_data["hora_fin"].zfill(5)
+    }
+    c.job_queue.run_repeating(monitor_callback, interval=180, first=5, chat_id=chat_id)
+    await u.message.reply_text("✅ Monitor activado en la nube. Te avisaré por aquí.")
     return ConversationHandler.END
 
-# ---------------------------
-# BUSCAR VUELOS
-# ---------------------------
-
-async def buscar_vuelos(origen, destino, fecha):
-
-    vuelos = []
-
-    url = "https://www.bintercanarias.com/es/reserva-vuelos/"
-
-    params = {
-        "departure": origen,
-        "arrival": destino,
-        "departureDate": fecha
-    }
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(url, params=params)
-
-    texto = r.text
-
-    horas = re.findall(r"\d{2}:\d{2}", texto)
-
-    for h in horas:
-        vuelos.append(h)
-
-    return list(set(vuelos))
-
-# ---------------------------
-# MONITOR
-# ---------------------------
-
-async def monitor(context: ContextTypes.DEFAULT_TYPE):
-
-    app = context.application
-
-    for b in list(busquedas):
-
-        try:
-
-            vuelos = await buscar_vuelos(
-                b["origen"],
-                b["destino"],
-                b["fecha"]
-            )
-
-            hora_ini = datetime.strptime(b["hora_ini"], "%H:%M")
-            hora_fin = datetime.strptime(b["hora_fin"], "%H:%M")
-
-            for v in vuelos:
-
-                hora_v = datetime.strptime(v, "%H:%M")
-
-                if hora_ini <= hora_v <= hora_fin:
-
-                    await app.bot.send_message(
-                        chat_id=b["chat_id"],
-                        text=f"🚨 Vuelo encontrado {b['origen']} → {b['destino']} a las {v}"
-                    )
-
-                    busquedas.remove(b)
-                    break
-
-        except Exception as e:
-            print("Error monitor:", e)
-
-# ---------------------------
-# MAIN
-# ---------------------------
-
-def main():
-
+if __name__ == "__main__":
+    # Lanzar servidor web en segundo plano
+    Thread(target=run_flask).start()
+    
     app = ApplicationBuilder().token(TOKEN).build()
-
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("buscar", buscar)],
         states={
@@ -170,17 +93,7 @@ def main():
         },
         fallbacks=[]
     )
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ayuda", ayuda))
     app.add_handler(conv_handler)
-
-    # monitor cada 5 minutos
-    app.job_queue.run_repeating(monitor, interval=300, first=10)
-
-    print("Bot funcionando...")
-
+    print("🚀 BOT NATIVO CLOUD LISTO")
     app.run_polling()
-
-if __name__ == "__main__":
-    main()
