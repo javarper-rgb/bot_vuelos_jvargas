@@ -1,4 +1,5 @@
 import os
+import asyncio
 import requests
 import logging
 from threading import Thread
@@ -6,26 +7,28 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ConversationHandler, MessageHandler, ContextTypes, filters
 
+# --- LOGS ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURACIÓN ---
 TOKEN = "8634912458:AAGEXyCQs0l_SV1PxttJ9bXxEo11GesWaGw"
-SERP_API_KEY = "TU_API_KEY_AQUI" # <--- PEGA AQUÍ TU KEY DE SERPAPI
+# Intentará leer la clave de Render, si no, usa la que pongas aquí
+SERP_API_KEY = os.environ.get("SERP_API_KEY", "TU_CLAVE_AQUI_SI_NO_USAS_RENDER_VARS")
 
+# --- SERVIDOR AUXILIAR ---
 app_flask = Flask(__name__)
 @app_flask.route('/')
-def health(): return "Bot Binter Online", 200
+def health(): return "Bot Binter API Online", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host='0.0.0.0', port=port)
 
-# --- BÚSQUEDA MEDIANTE SERPAPI (No se bloquea) ---
+# --- BÚSQUEDA PROFESIONAL (SerpApi) ---
 def buscar_vuelos_serp(b):
-    vuelos_encontrados = []
+    vuelos_validos = []
     try:
-        # Consultamos a Google Flights a través de SerpApi
         params = {
             "engine": "google_flights",
             "departure_id": b['origen'],
@@ -35,37 +38,38 @@ def buscar_vuelos_serp(b):
             "hl": "es",
             "api_key": SERP_API_KEY
         }
-        response = requests.get("https://serpapi.com", params=params, timeout=20)
+        logger.info(f"Consultando SerpApi para {b['origen']}->{b['destino']}")
+        response = requests.get("https://serpapi.com", params=params, timeout=30)
         data = response.json()
         
-        # Filtramos los vuelos de Binter en el rango horario
-        flights = data.get("best_flights", []) + data.get("other_flights", [])
+        # Google Flights devuelve los resultados en estas dos listas
+        resultados = data.get("best_flights", []) + data.get("other_flights", [])
         
-        for flight in flights:
-            for flight_info in flight.get("flights", []):
-                # Verificamos si es Binter
-                if "Binter" in flight_info.get("airline", ""):
-                    # Extraemos la hora de salida (formato "YYYY-MM-DD HH:MM")
-                    departure_time = flight_info.get("departure_airport", {}).get("time", "")
-                    hora = departure_time.split(" ")[1] # Obtenemos HH:MM
-                    
-                    if b['hora_ini'] <= hora <= b['hora_fin']:
-                        vuelos_encontrados.append(hora)
+        for itinerario in resultados:
+            for vuelo in itinerario.get("flights", []):
+                # Filtramos por Binter
+                if "Binter" in vuelo.get("airline", ""):
+                    # La hora viene como '2025-03-20 14:30'
+                    full_departure = vuelo.get("departure_airport", {}).get("time", "")
+                    if full_departure:
+                        hora_solo = full_departure.split(" ")[1] # Extrae '14:30'
+                        if b['hora_ini'] <= hora_solo <= b['hora_fin']:
+                            vuelos_validos.append(hora_solo)
+                            
     except Exception as e:
-        logger.error(f"Error en SerpApi: {e}")
+        logger.error(f"Error consultando SerpApi: {e}")
     
-    return sorted(list(set(vuelos_encontrados)))
+    return sorted(list(set(vuelos_validos)))
 
-# --- LÓGICA BOT ---
+# --- BOT HANDLERS ---
 ORIGEN, DESTINO, FECHA, HORA_INI, HORA_FIN = range(5)
 busquedas_activas = {}
 
 async def monitor_callback(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
-    b = busquedas_activas.get(chat_id)
-    if not b: return
+    if chat_id not in busquedas_activas: return
+    b = busquedas_activas[chat_id]
     
-    # Ejecutamos la búsqueda en un hilo para no bloquear el bot
     vuelos = await asyncio.to_thread(buscar_vuelos_serp, b)
     
     if vuelos:
@@ -73,8 +77,9 @@ async def monitor_callback(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
         context.job.schedule_removal()
         del busquedas_activas[chat_id]
+    else:
+        logger.info(f"Monitor: Sin vuelos para {chat_id} todavía.")
 
-# --- HANDLERS ---
 async def start(u, c): await u.message.reply_text("✈️ Monitor Binter Cloud.\nUsa /buscar.")
 async def buscar(u, c): await u.message.reply_text("📍 Origen (LPA):"); return ORIGEN
 async def origen(u, c): c.user_data["origen"] = u.message.text.upper(); await u.message.reply_text("🏁 Destino (TFN):"); return DESTINO
@@ -88,11 +93,10 @@ async def hora_fin(u, c):
         "fecha": c.user_data["fecha"], "hora_ini": c.user_data["hora_ini"], "hora_fin": u.message.text
     }
     c.job_queue.run_repeating(monitor_callback, interval=300, first=5, chat_id=chat_id)
-    await u.message.reply_text("✅ Monitor activado con API. Te avisaré pronto.")
+    await u.message.reply_text("✅ **Monitor activado.** Te avisaré en cuanto aparezca un vuelo.")
     return ConversationHandler.END
 
 if __name__ == "__main__":
-    import asyncio
     Thread(target=run_flask, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
     
